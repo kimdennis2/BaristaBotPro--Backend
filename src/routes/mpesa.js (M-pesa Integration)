@@ -1,0 +1,218 @@
+/**
+ * M-Pesa Daraja API Routes
+ * Handles STK Push and callback webhooks
+ */
+
+const express = require('express');
+const axios = require('axios');
+const crypto = require('crypto');
+
+module.exports = (broadcast) => {
+  const router = express.Router();
+
+  // Generate access token
+  const getAccessToken = async () => {
+    const consumerKey = process.env.MPESA_CONSUMER_KEY;
+    const consumerSecret = process.env.MPESA_CONSUMER_SECRET;
+    
+    const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
+    
+    const url = process.env.MPESA_ENVIRONMENT === 'production'
+      ? 'https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials'
+      : 'https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials';
+
+    try {
+      const response = await axios.get(url, {
+        headers: { Authorization: `Basic ${auth}` }
+      });
+      return response.data.access_token;
+    } catch (error) {
+      console.error('M-Pesa Auth Error:', error.response?.data || error.message);
+      throw new Error('Failed to get M-Pesa access token');
+    }
+  };
+
+  // STK Push endpoint
+  router.post('/stk-push', async (req, res) => {
+    try {
+      const { phone, amount, orderId, tableNumber } = req.body;
+
+      // Validate input
+      if (!phone || !amount || !orderId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields: phone, amount, orderId'
+        });
+      }
+
+      // Format phone (remove +254 or 0, add 254)
+      let formattedPhone = phone.replace(/\D/g, '');
+      if (formattedPhone.startsWith('0')) {
+        formattedPhone = '254' + formattedPhone.slice(1);
+      } else if (formattedPhone.startsWith('+')) {
+        formattedPhone = formattedPhone.slice(1);
+      }
+
+      const token = await getAccessToken();
+      const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, -3);
+      const shortcode = process.env.MPESA_SHORTCODE;
+      const passkey = process.env.MPESA_PASSKEY;
+      
+      const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
+
+      const url = process.env.MPESA_ENVIRONMENT === 'production'
+        ? 'https://api.safaricom.co.ke/mpesa/stkpush/v1/processrequest'
+        : 'https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest';
+
+      const payload = {
+        BusinessShortCode: shortcode,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType: 'CustomerPayBillOnline',
+        Amount: Math.ceil(amount), // M-Pesa doesn't accept decimals
+        PartyA: formattedPhone,
+        PartyB: shortcode,
+        PhoneNumber: formattedPhone,
+        CallBackURL: process.env.MPESA_CALLBACK_URL,
+        AccountReference: `BARISTA-${orderId}`,
+        TransactionDesc: `Coffee Order ${orderId} Table ${tableNumber || 'N/A'}`
+      };
+
+      const response = await axios.post(url, payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      // Store pending transaction in memory (use Redis in production)
+      global.pendingTransactions = global.pendingTransactions || new Map();
+      global.pendingTransactions.set(response.data.CheckoutRequestID, {
+        orderId,
+        phone: formattedPhone,
+        amount,
+        status: 'pending',
+        timestamp: new Date()
+      });
+
+      res.json({
+        success: true,
+        checkoutRequestId: response.data.CheckoutRequestID,
+        merchantRequestId: response.data.MerchantRequestID,
+        message: 'STK Push sent successfully. Check your phone to complete payment.'
+      });
+
+    } catch (error) {
+      console.error('STK Push Error:', error.response?.data || error.message);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to initiate M-Pesa payment',
+        details: error.response?.data?.errorMessage || error.message
+      });
+    }
+  });
+
+  // M-Pesa callback (Safaricom calls this)
+  router.post('/callback', async (req, res) => {
+    console.log('M-Pesa Callback received:', JSON.stringify(req.body, null, 2));
+    
+    const { Body } = req.body;
+    
+    if (!Body || !Body.stkCallback) {
+      return res.status(400).json({ ResultCode: 1, ResultDesc: 'Invalid callback' });
+    }
+
+    const callback = Body.stkCallback;
+    const checkoutRequestId = callback.CheckoutRequestID;
+    
+    // Always accept callback first (Safaricom requires quick response)
+    res.json({ ResultCode: 0, ResultDesc: 'Callback received successfully' });
+
+    // Process asynchronously
+    try {
+      const pendingTx = global.pendingTransactions?.get(checkoutRequestId);
+      
+      if (callback.ResultCode === 0) {
+        // Success
+        const metadata = callback.CallbackMetadata.Item;
+        const mpesaReceipt = metadata.find(i => i.Name === 'MpesaReceiptNumber')?.Value;
+        const phone = metadata.find(i => i.Name === 'PhoneNumber')?.Value;
+        const amount = metadata.find(i => i.Name === 'Amount')?.Value;
+
+        const orderId = pendingTx?.orderId || callback.AccountReference?.replace('BARISTA-', '');
+
+        // Broadcast to frontend
+        broadcast({
+          type: 'PAYMENT_SUCCESS',
+          orderId,
+          mpesaReceipt,
+          phone,
+          amount,
+          paymentMethod: 'mpesa',
+          timestamp: new Date().toISOString()
+        }, orderId);
+
+        // Update order in database (implement in orders.js)
+        console.log(`✅ Payment successful for order ${orderId}: ${mpesaReceipt}`);
+
+      } else {
+        // Failed
+        const orderId = pendingTx?.orderId;
+        
+        broadcast({
+          type: 'PAYMENT_FAILED',
+          orderId,
+          reason: callback.ResultDesc,
+          errorCode: callback.ResultCode
+        }, orderId);
+
+        console.log(`❌ Payment failed: ${callback.ResultDesc}`);
+      }
+
+      // Clean up
+      global.pendingTransactions?.delete(checkoutRequestId);
+
+    } catch (error) {
+      console.error('Callback processing error:', error);
+    }
+  });
+
+  // Query transaction status
+  router.post('/query-status', async (req, res) => {
+    try {
+      const { checkoutRequestId } = req.body;
+      
+      const token = await getAccessToken();
+      const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, -3);
+      const password = Buffer.from(
+        `${process.env.MPESA_SHORTCODE}${process.env.MPESA_PASSKEY}${timestamp}`
+      ).toString('base64');
+
+      const url = process.env.MPESA_ENVIRONMENT === 'production'
+        ? 'https://api.safaricom.co.ke/mpesa/stkpushquery/v1/query'
+        : 'https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query';
+
+      const response = await axios.post(url, {
+        BusinessShortCode: process.env.MPESA_SHORTCODE,
+        Password: password,
+        Timestamp: timestamp,
+        CheckoutRequestID: checkoutRequestId
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      res.json({
+        success: true,
+        status: response.data
+      });
+
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.response?.data || error.message
+      });
+    }
+  });
+
+  return router;
+};
