@@ -1,0 +1,98 @@
+/**
+ * POS System Integration Routes
+ * For local Nairobi POS systems (Slant, Oracle, etc.)
+ */
+
+const express = require('express');
+
+module.exports = (broadcast) => {
+  const router = express.Router();
+
+  // Middleware to verify POS API key
+  const verifyPosKey = (req, res, next) => {
+    const apiKey = req.headers['x-pos-api-key'];
+    if (apiKey !== process.env.API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized POS system' });
+    }
+    next();
+  };
+
+  // Receive order from external POS
+  router.post('/incoming-order', verifyPosKey, (req, res) => {
+    const {
+      posOrderId,
+      items,
+      total,
+      tableNumber,
+      customerName,
+      posSystem // 'slant', 'oracle', 'custom'
+    } = req.body;
+
+    // Transform POS order to BaristaBot format
+    const order = {
+      id: `POS-${posOrderId}`,
+      posRef: posOrderId,
+      posSystem,
+      items: items.map(item => ({
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        modifiers: item.modifiers || []
+      })),
+      total,
+      customer: `${customerName || 'Walk-in'} (Table ${tableNumber || 'N/A'})`,
+      tableNumber,
+      status: 'pending',
+      source: 'pos',
+      createdAt: new Date().toISOString()
+    };
+
+    // Broadcast to BaristaBot dashboard
+    broadcast({
+      type: 'POS_ORDER_RECEIVED',
+      order
+    });
+
+    res.json({
+      success: true,
+      baristaBotOrderId: order.id,
+      message: 'Order synced to BaristaBot'
+    });
+  });
+
+  // Send update back to POS
+  router.post('/status-update', verifyPosKey, (req, res) => {
+    const { posOrderId, status, estimatedTime } = req.body;
+
+    broadcast({
+      type: 'POS_STATUS_UPDATE',
+      posOrderId,
+      status,
+      estimatedTime
+    });
+
+    res.json({ success: true });
+  });
+
+  // Get daily report for POS reconciliation
+  router.get('/daily-report/:date', verifyPosKey, (req, res) => {
+    const { date } = req.params;
+    
+    // In production: Query database for POS orders on this date
+    const mockReport = {
+      date,
+      totalOrders: 45,
+      totalRevenue: 28500,
+      mpesaRevenue: 22000,
+      cashRevenue: 6500,
+      breakdown: {
+        'POS-Slant': 30,
+        'POS-Oracle': 15
+      }
+    };
+
+    res.json(mockReport);
+  });
+
+  return router;
+};
