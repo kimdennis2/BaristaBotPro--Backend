@@ -1,0 +1,232 @@
+/**
+ * Order Management Routes
+ * CRUD operations with WebSocket broadcasting
+ */
+
+const express = require('express');
+
+// In-memory store (replace with PostgreSQL in production)
+let orders = [
+  {
+    id: 1001,
+    coffee: 'Espresso',
+    origin: 'kenya',
+    size: 'Small',
+    extras: ['Extra Shot'],
+    status: 'ready',
+    customer: 'Dennis (Table A3)',
+    total: 450,
+    assignedBarista: 'dennis',
+    paymentMethod: 'mpesa',
+    mpesaReceipt: 'NLJ7RT61SV',
+    createdAt: new Date(Date.now() - 120000).toISOString(),
+    feedback: [],
+    tips: 50
+  },
+  {
+    id: 1002,
+    coffee: 'Latte',
+    origin: 'brazil',
+    size: 'Medium',
+    extras: ['Oat Milk'],
+    status: 'preparing',
+    customer: 'Sarah (Table B1)',
+    total: 580,
+    assignedBarista: 'ian',
+    paymentMethod: 'pending',
+    createdAt: new Date(Date.now() - 300000).toISOString(),
+    feedback: [],
+    tips: 0
+  }
+];
+
+let nextOrderId = 1003;
+
+module.exports = (broadcast) => {
+  const router = express.Router();
+
+  // Get all orders
+  router.get('/', (req, res) => {
+    res.json({
+      success: true,
+      count: orders.length,
+      orders: orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    });
+  });
+
+  // Get single order
+  router.get('/:id', (req, res) => {
+    const order = orders.find(o => o.id === parseInt(req.params.id));
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+    res.json({ success: true, order });
+  });
+
+  // Create new order
+  router.post('/', (req, res) => {
+    const {
+      coffee,
+      origin,
+      size,
+      extras,
+      customer,
+      tableNumber,
+      total,
+      assignedBarista,
+      paymentMethod
+    } = req.body;
+
+    const newOrder = {
+      id: nextOrderId++,
+      coffee,
+      origin: origin || 'kenya',
+      size,
+      extras: extras || [],
+      status: 'pending',
+      customer: `${customer} (Table ${tableNumber})`,
+      total,
+      assignedBarista: assignedBarista || 'dennis',
+      paymentMethod,
+      createdAt: new Date().toISOString(),
+      feedback: [],
+      tips: 0
+    };
+
+    orders.push(newOrder);
+
+    // Broadcast new order to all barista clients
+    broadcast({
+      type: 'NEW_ORDER',
+      order: newOrder
+    });
+
+    res.status(201).json({
+      success: true,
+      order: newOrder,
+      message: 'Order created successfully'
+    });
+  });
+
+  // Update order status
+  router.put('/:id/status', (req, res) => {
+    const { status } = req.body;
+    const validStatuses = ['pending', 'preparing', 'ready', 'completed', 'cancelled'];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
+      });
+    }
+
+    const order = orders.find(o => o.id === parseInt(req.params.id));
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    order.status = status;
+    order.updatedAt = new Date().toISOString();
+
+    // Broadcast status change
+    broadcast({
+      type: 'ORDER_STATUS_UPDATE',
+      orderId: order.id,
+      status,
+      timestamp: order.updatedAt
+    }, order.id);
+
+    res.json({
+      success: true,
+      order,
+      message: `Order status updated to ${status}`
+    });
+  });
+
+  // Add feedback
+  router.post('/:id/feedback', (req, res) => {
+    const { text, rating, user } = req.body;
+    const order = orders.find(o => o.id === parseInt(req.params.id));
+    
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    const feedback = {
+      id: Date.now(),
+      text,
+      rating: rating || 5,
+      user: user || 'Anonymous',
+      createdAt: new Date().toISOString()
+    };
+
+    order.feedback.push(feedback);
+
+    // Broadcast to barista dashboard
+    broadcast({
+      type: 'NEW_FEEDBACK',
+      orderId: order.id,
+      feedback
+    }, order.id);
+
+    res.json({
+      success: true,
+      feedback,
+      message: 'Feedback added successfully'
+    });
+  });
+
+  // Add tip
+  router.post('/:id/tip', (req, res) => {
+    const { amount, paymentMethod } = req.body;
+    const order = orders.find(o => o.id === parseInt(req.params.id));
+    
+    if (!order) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    order.tips = (order.tips || 0) + amount;
+    order.tipHistory = order.tipHistory || [];
+    order.tipHistory.push({
+      amount,
+      paymentMethod,
+      createdAt: new Date().toISOString()
+    });
+
+    broadcast({
+      type: 'TIP_RECEIVED',
+      orderId: order.id,
+      baristaId: order.assignedBarista,
+      amount,
+      totalTips: order.tips
+    }, order.id);
+
+    res.json({
+      success: true,
+      totalTips: order.tips,
+      message: `Tip of KES ${amount} added successfully`
+    });
+  });
+
+  // Delete order (admin only)
+  router.delete('/:id', (req, res) => {
+    const index = orders.findIndex(o => o.id === parseInt(req.params.id));
+    if (index === -1) {
+      return res.status(404).json({ success: false, error: 'Order not found' });
+    }
+
+    const deleted = orders.splice(index, 1)[0];
+    
+    broadcast({
+      type: 'ORDER_DELETED',
+      orderId: deleted.id
+    });
+
+    res.json({
+      success: true,
+      message: 'Order deleted successfully'
+    });
+  });
+
+  return router;
+};
