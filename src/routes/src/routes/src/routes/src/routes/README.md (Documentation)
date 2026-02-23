@@ -1,0 +1,35 @@
+# ☕ BaristaBot Pro Backend
+
+**Production-grade payment backend for BaristaBot Pro**
+Built by Dennis Kathurima | Nairobi → Global
+
+## 🚀 Features
+
+- **M-Pesa Daraja API**: STK Push, callbacks, transaction queries
+- **Web3 Payments**: MetaMask (Polygon) & Phantom (Solana) verification
+- **Real-time**: WebSocket for live order updates
+- **POS Integration**: Slant, Oracle, and custom POS systems
+- **Security**: Helmet, rate limiting, JWT auth
+- **Dockerized**: Production-ready containers
+
+## 🛠️ Quick Start
+
+### Local Development
+
+```bash
+# 1. Clone
+git clone https://github.com/denniskathurima/baristabot-backend.git
+cd baristabot-backend
+
+# 2. Install
+npm install
+
+# 3. Environment
+cp .env.example .env
+# Edit .env with your M-Pesa credentials
+
+# 4. Start with Docker (includes PostgreSQL + Redis)
+docker-compose up
+
+# Or local Node
+npm run dev
