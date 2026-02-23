@@ -1,0 +1,21 @@
+baristabot-backend/
+├── .env.example              # Template for secrets
+├── .gitignore               # Node modules, .env
+├── Dockerfile               # Container deployment
+├── docker-compose.yml       # Local development
+├── package.json             # Dependencies
+├── README.md                # Documentation
+├── server.js                # Main entry point
+└── src/
+    ├── config/
+    │   └── database.js       # PostgreSQL + Redis setup
+    ├── routes/
+    │   ├── mpesa.js          # M-Pesa Daraja API
+    │   ├── orders.js         # Order CRUD + WebSocket
+    │   └── web3.js           # MetaMask + Phantom
+    ├── services/
+    │   ├── mpesaService.js   # STK Push logic
+    │   ├── web3Service.js    # Blockchain transactions
+    │   └── websocketService.js # Real-time updates
+    └── models/
+        └── Order.js          # Database schema
