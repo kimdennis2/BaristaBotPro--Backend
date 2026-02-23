@@ -1,0 +1,5 @@
+# Build image
+docker build -t baristabot-backend .
+
+# Run
+docker run -p 3000:3000 --env-file .env baristabot-backend
