@@ -1,0 +1,3 @@
+// In your frontend HTML, update:
+const API_URL = 'https://your-backend-url.com';
+const WS_URL = 'wss://your-backend-url.com/ws';
