@@ -1,0 +1,9 @@
+Endpoint	Method	Description	
+`/health`	GET	Server status	
+`/api/mpesa/stk-push`	POST	Initiate M-Pesa payment	
+`/api/mpesa/callback`	POST	M-Pesa webhook	
+`/api/orders`	GET/POST	Order management	
+`/api/orders/:id/status`	PUT	Update order status	
+`/api/web3/verify-eth`	POST	Verify ETH transaction	
+`/api/web3/verify-sol`	POST	Verify SOL transaction	
+`/ws`	WebSocket	Real-time updates
